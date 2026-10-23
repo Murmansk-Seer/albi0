@@ -1,4 +1,5 @@
-from collections.abc import Generator, Iterable, Iterator
+import asyncio
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 import fnmatch
 import functools
@@ -9,8 +10,8 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, AnyStr, Callable, ParamSpec, TypeVar
-import asyncio
+from typing import Any, AnyStr, ParamSpec, TypeVar
+import warnings
 
 import httpx
 from tqdm import tqdm
@@ -71,17 +72,41 @@ def validate_size_range(
 ) -> None:
 	"""校验尺寸范围是否有效。"""
 	if min_size is not None and max_size is not None and min_size > max_size:
-		raise ValueError(
-			f'最小文件尺寸 ({min_size}) 不能大于最大文件尺寸 ({max_size})'
+		raise ValueError(f'最小文件尺寸 ({min_size}) 不能大于最大文件尺寸 ({max_size})')
+
+
+def resolve_attempts(max_attempts: int, max_retries: int | None = None) -> int:
+	if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
+		raise ValueError('max_attempts must be an integer between 1 and 3')
+	if max_retries is not None:
+		if type(max_retries) is not int or max_retries < 0:
+			raise ValueError('max_retries must be a nonnegative integer')
+		warnings.warn(
+			'max_retries is deprecated; use max_attempts (three total maximum)',
+			DeprecationWarning,
+			stacklevel=3,
 		)
+		return min(max_retries + 1, 3)
+	return max_attempts
+
+
+def retryable(error: Exception) -> bool:
+	if isinstance(error, httpx.HTTPStatusError):
+		return (
+			error.response.status_code in (408, 429)
+			or error.response.status_code >= 500
+		)
+	return not isinstance(error, httpx.UnsupportedProtocol | httpx.LocalProtocolError)
 
 
 def retry(
-	max_retries: int = 3,
+	max_retries: int | None = None,
 	base_delay: float = 1.0,
 	max_delay: float = 60.0,
 	backoff_factor: float = 2.0,
 	exceptions: tuple[type[Exception], ...] = (httpx.HTTPError,),
+	*,
+	max_attempts: int = 3,
 ):
 	"""
 	指数退避重试装饰器，支持同步和异步函数。
@@ -94,6 +119,8 @@ def retry(
 		exceptions: 触发重试的异常类型
 	"""
 
+	attempts = resolve_attempts(max_attempts, max_retries)
+
 	def decorator(func: Callable[P, T]) -> Callable[P, T]:
 		if asyncio.iscoroutinefunction(func):
 
@@ -101,16 +128,18 @@ def retry(
 			async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
 				delay = base_delay
 				last_exception = None
-				for i in range(max_retries + 1):
+				for i in range(attempts):
 					try:
 						return await func(*args, **kwargs)
 					except exceptions as e:
 						last_exception = e
-						if i == max_retries:
-							logger.error(f'达到最大重试次数 ({max_retries})，最后一次错误: {e}')
+						if not retryable(e) or i == attempts - 1:
+							logger.error(
+								f'Request failed after {i + 1}/{attempts} attempts: {e}'
+							)
 							raise
 						logger.warning(
-							f'请求失败: {e}，正在进行第 {i + 1} 次重试，等待 {delay:.2f}s...'
+							f'Attempt {i + 1}/{attempts} failed: {e}; wait {delay:.2f}s'
 						)
 						await asyncio.sleep(delay)
 						delay = min(delay * backoff_factor, max_delay)
@@ -125,16 +154,18 @@ def retry(
 			def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
 				delay = base_delay
 				last_exception = None
-				for i in range(max_retries + 1):
+				for i in range(attempts):
 					try:
 						return func(*args, **kwargs)
 					except exceptions as e:
 						last_exception = e
-						if i == max_retries:
-							logger.error(f'达到最大重试次数 ({max_retries})，最后一次错误: {e}')
+						if not retryable(e) or i == attempts - 1:
+							logger.error(
+								f'Request failed after {i + 1}/{attempts} attempts: {e}'
+							)
 							raise
 						logger.warning(
-							f'请求失败: {e}，正在进行第 {i + 1} 次重试，等待 {delay:.2f}s...'
+							f'Attempt {i + 1}/{attempts} failed: {e}; wait {delay:.2f}s'
 						)
 						time.sleep(delay)
 						delay = min(delay * backoff_factor, max_delay)
@@ -150,7 +181,8 @@ def retry(
 def retry_call(
 	func: Callable[..., T],
 	*args: Any,
-	max_retries: int = 3,
+	max_retries: int | None = None,
+	max_attempts: int = 3,
 	base_delay: float = 1.0,
 	max_delay: float = 60.0,
 	backoff_factor: float = 2.0,
@@ -162,6 +194,7 @@ def retry_call(
 	"""
 	_retry: Any = retry(
 		max_retries=max_retries,
+		max_attempts=max_attempts,
 		base_delay=base_delay,
 		max_delay=max_delay,
 		backoff_factor=backoff_factor,
@@ -251,10 +284,10 @@ def set_directory(path: PathTypes):
 	"""Sets the cwd within the context
 
 	Args:
-	    path (Path): The path to the cwd
+	path (Path): The path to the cwd
 
 	Yields:
-	    None
+	None
 	"""
 
 	origin = Path().absolute()

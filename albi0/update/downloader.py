@@ -51,7 +51,7 @@ class Downloader:
 		"""
 		self._client = client or self._global_client
 		self._semaphore = anyio.Semaphore(limit)
-		self._timeout = timeout
+		self._timeout = min(timeout if timeout is not None else 180, 180)
 
 	@retry(exceptions=(httpx.HTTPError, DownloadTimeoutError))
 	async def _get_data(
@@ -60,14 +60,16 @@ class Downloader:
 		*,
 		method: Literal['GET', 'POST'] = 'GET',
 		md5: str | None = None,
-		timeout: float | None = None,
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
 	) -> bytes:
 		url = URL(str(url))
-		effective_timeout = timeout if timeout is not None else self._timeout
+		effective_timeout = min(timeout if timeout is not None else self._timeout, 180)
 
 		try:
 			with anyio.fail_after(effective_timeout):
-				async with self._client.stream(method, url, timeout=None) as res:
+				async with self._client.stream(
+					method, url, timeout=httpx.Timeout(180, connect=15)
+				) as res:
 					res: 'Response'
 					res.raise_for_status()
 
@@ -104,7 +106,7 @@ class Downloader:
 		*,
 		method: Literal['GET', 'POST'] = 'GET',
 		md5: str | None = None,
-		timeout: float | None = None,
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
 		postprocess_handler: DownloadPostProcessMethod | None = None,
 		semaphore: anyio.Semaphore | None = None,
 	):
@@ -123,7 +125,7 @@ class Downloader:
 		semaphore: anyio.Semaphore | None = None,
 		progress_bar: tqdm | None = None,
 		postprocess_handler: DownloadPostProcessMethod | None = None,
-		timeout: float | None = None,
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
 	) -> None:
 		total = len(params)
 		# 这里不能使用 or 表达式，因为 tqdm 的 total 属性还没有设置，

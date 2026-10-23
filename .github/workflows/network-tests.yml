@@ -1,0 +1,13 @@
+name: Network regression tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - run: uv run --group test python -m pytest -q
+      - run: uv run ruff check albi0/utils.py albi0/update/downloader.py albi0/update/updater.py albi0/updaters/yoo_version_manager.py tests/test_network_budget.py tests/test_version.py
