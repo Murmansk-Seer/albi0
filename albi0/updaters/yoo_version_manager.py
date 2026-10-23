@@ -222,12 +222,7 @@ class YooVersionManager(AbstractVersionManager):
 	def get_remote_version(self) -> str:
 		"""获取远程版本号"""
 		remote_version_url = join_url(self.remote_path, self.version_basename)
-		response = retry_call(
-			httpx.get,
-			remote_version_url,
-			params={'t': int(time.time() * 1000)},
-		)
-		response.raise_for_status()
+		response = self._request_metadata(remote_version_url)
 		result = response.text
 		return result
 
@@ -240,12 +235,22 @@ class YooVersionManager(AbstractVersionManager):
 			self.remote_path,
 			f'PackageManifest_{self.package_name}_{self.get_remote_version()}.bytes',
 		)
-		response = retry_call(
-			httpx.get, remote_manifest_url, params={'t': int(time.time() * 1000)}
-		)
-		response.raise_for_status()
+		response = self._request_metadata(remote_manifest_url)
 		manifest_dict = self.manifest_factory(response.content)
 		return self._simplify_manifest(manifest_dict)
+
+	@staticmethod
+	def _request_metadata(url: str) -> httpx.Response:
+		def request():
+			response = httpx.get(
+				url,
+				params={'t': int(time.time() * 1000)},
+				timeout=httpx.Timeout(30, connect=15),
+			)
+			response.raise_for_status()
+			return response
+
+		return retry_call(request, max_attempts=3)
 
 	def load_local_manifest(self) -> Manifest:
 		if not self.is_local_version_exists:

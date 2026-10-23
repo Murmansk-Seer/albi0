@@ -42,7 +42,7 @@ class Updater:
 		save_manifest: bool = True,
 		patterns: Iterable[str] = (),
 		semaphore: anyio.Semaphore | None = None,
-		timeout: float | None = None,
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to downloader deadline
 		min_size: int | None = None,
 		max_size: int | None = None,
 	) -> None:
@@ -72,7 +72,15 @@ class Updater:
 		items = manifest.items
 		self._log_message(f'需要更新的文件数量: {len(items)}')
 		tasks = [
-			DownloadParams(url=item.remote_filename, filename=Path(local_fn))
+			DownloadParams(
+				url=item.remote_filename,
+				filename=Path(local_fn),
+				md5=(
+					item.file_hash.decode('ascii')
+					if len(item.file_hash) == 32
+					else item.file_hash.hex()
+				),
+			)
 			for local_fn, item in items.items()
 		]
 		if tasks:
