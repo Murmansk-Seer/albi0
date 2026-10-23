@@ -11,6 +11,14 @@ from albi0.update.version import (
 class DummyVersionManager(AbstractVersionManager):
 	"""用于测试的虚设版本管理器。"""
 
+	@property
+	def local_manifest_path(self):
+		return getattr(self, '_path', 'manifest.json')
+
+	@local_manifest_path.setter
+	def local_manifest_path(self, value):
+		self._path = value
+
 	def __init__(
 		self,
 		*,
@@ -54,7 +62,7 @@ class DummyVersionManager(AbstractVersionManager):
 
 def lf(name: str | Path) -> LocalFileName:
 	"""LocalFileName 的简写工厂函数。"""
-	return LocalFileName(Path(name))
+	return LocalFileName(str(name))
 
 
 def make_manifest(version: str, items: dict[Path, tuple[str, str, bytes]]) -> Manifest:
