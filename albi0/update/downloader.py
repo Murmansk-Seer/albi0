@@ -47,7 +47,7 @@ class Downloader:
 		Args:
 			client: httpx异步客户端
 			limit: 最大并发下载数
-			timeout: 单个文件下载超时时间（秒），None 表示不限制
+			timeout: 等待网络数据的最长间隔（秒），默认 180 秒，最大 180 秒
 		"""
 		self._client = client or self._global_client
 		self._semaphore = anyio.Semaphore(limit)
@@ -60,37 +60,39 @@ class Downloader:
 		*,
 		method: Literal['GET', 'POST'] = 'GET',
 		md5: str | None = None,
-		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to HTTPX
 	) -> bytes:
 		url = URL(str(url))
 		effective_timeout = min(timeout if timeout is not None else self._timeout, 180)
 
 		try:
-			with anyio.fail_after(effective_timeout):
-				async with self._client.stream(
-					method, url, timeout=httpx.Timeout(180, connect=15)
-				) as res:
-					res: 'Response'
-					res.raise_for_status()
+			async with self._client.stream(
+				method,
+				url,
+				timeout=httpx.Timeout(
+					effective_timeout, connect=min(15, effective_timeout)
+				),
+			) as res:
+				res: 'Response'
+				res.raise_for_status()
 
-					data = b''
-					with tqdm(
-						total=int(res.headers.get('content-length', 0)),
-						unit_scale=True,
-						unit_divisor=1024,
-						unit='B',
-						desc=f'{url.path.split("/")[-1]}下载中',
-						leave=False,
-					) as progress_bar:
+				data = b''
+				with tqdm(
+					total=int(res.headers.get('content-length', 0)),
+					unit_scale=True,
+					unit_divisor=1024,
+					unit='B',
+					desc=f'{url.path.split("/")[-1]}下载中',
+					leave=False,
+				) as progress_bar:
+					num_bytes_downloaded = res.num_bytes_downloaded
+					async for chunk in res.aiter_bytes():
+						data += chunk
+						progress_bar.update(
+							res.num_bytes_downloaded - num_bytes_downloaded
+						)
 						num_bytes_downloaded = res.num_bytes_downloaded
-						async for chunk in res.aiter_bytes():
-							data += chunk
-							progress_bar.update(
-								res.num_bytes_downloaded - num_bytes_downloaded
-							)
-							num_bytes_downloaded = res.num_bytes_downloaded
-		except TimeoutError:
-			assert effective_timeout is not None
+		except httpx.TimeoutException:
 			logger.error(f'下载超时 ({effective_timeout}s): {url}')
 			raise DownloadTimeoutError(url, effective_timeout) from None
 
@@ -106,7 +108,7 @@ class Downloader:
 		*,
 		method: Literal['GET', 'POST'] = 'GET',
 		md5: str | None = None,
-		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to HTTPX
 		postprocess_handler: DownloadPostProcessMethod | None = None,
 		semaphore: anyio.Semaphore | None = None,
 	):
@@ -125,7 +127,7 @@ class Downloader:
 		semaphore: anyio.Semaphore | None = None,
 		progress_bar: tqdm | None = None,
 		postprocess_handler: DownloadPostProcessMethod | None = None,
-		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to fail_after
+		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to HTTPX
 	) -> None:
 		total = len(params)
 		# 这里不能使用 or 表达式，因为 tqdm 的 total 属性还没有设置，
