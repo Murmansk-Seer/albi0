@@ -1,6 +1,5 @@
 from importlib.metadata import version
 
-
 try:
 	__version__ = version('albi0')
 except Exception:
@@ -23,22 +22,22 @@ from albi0.api import (
 # 导入核心类供高级用户使用
 from albi0.extract import Extractor
 from albi0.update import AbstractVersionManager, Downloader, Updater
+from albi0.update.version import RemoteManifestSnapshot
 
 __all__ = [
+	'AbstractVersionManager',
+	'Downloader',
+	'Extractor',
+	'RemoteManifestSnapshot',
+	'Updater',
 	'__version__',
-	# API 函数
+	'cleanup',
 	'extract_assets',
-	'update_resources',
 	'get_remote_version',
 	'list_extractors',
 	'list_updaters',
-	'load_plugin',
 	'load_all_plugins',
+	'load_plugin',
 	'session',
-	'cleanup',
-	# 核心类
-	'Extractor',
-	'Updater',
-	'Downloader',
-	'AbstractVersionManager',
+	'update_resources',
 ]

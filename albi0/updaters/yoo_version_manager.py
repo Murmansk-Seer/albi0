@@ -3,18 +3,24 @@ from enum import IntEnum
 from pathlib import Path
 import time
 from typing import Any, Protocol, TypedDict
+from urllib.parse import urlsplit
 
+import anyio
+from anyio.from_thread import start_blocking_portal
 import httpx
 from packaging.version import Version
 
 from albi0.bytes_reader import BytesReader, LengthType
+from albi0.log import logger
 from albi0.update.version import (
 	AbstractVersionManager,
 	LocalFileName,
 	Manifest,
 	ManifestItem,
 )
-from albi0.utils import join_path, join_url, retry_call
+from albi0.utils import join_path, join_url, retryable
+
+METADATA_ATTEMPT_SECONDS = 60
 
 
 class VersionProtocol(Protocol):
@@ -231,26 +237,79 @@ class YooVersionManager(AbstractVersionManager):
 		return self.load_local_manifest().version
 
 	def get_remote_manifest(self) -> Manifest:
+		version = self.get_remote_version()
 		remote_manifest_url = join_url(
 			self.remote_path,
-			f'PackageManifest_{self.package_name}_{self.get_remote_version()}.bytes',
+			f'PackageManifest_{self.package_name}_{version}.bytes',
 		)
 		response = self._request_metadata(remote_manifest_url)
 		manifest_dict = self.manifest_factory(response.content)
+		if (
+			manifest_dict['PackageName'] != self.package_name
+			or manifest_dict['PackageVersion'] != version
+		):
+			raise ValueError(
+				f'Manifest identity mismatch: {remote_manifest_url}; '
+				f'expected {self.package_name}/{version}, '
+				f'actual {manifest_dict["PackageName"]}/'
+				f'{manifest_dict["PackageVersion"]}'
+			)
+		for count_key, items_key in (
+			('PackageAssetCount', 'PackageAssetInfos'),
+			('PackageBundleCount', 'BundleList'),
+		):
+			if (
+				type(manifest_dict[count_key]) is not int
+				or manifest_dict[count_key] < 0
+				or manifest_dict[count_key] != len(manifest_dict[items_key])
+			):
+				raise ValueError(
+					f'Invalid manifest structure: {remote_manifest_url}: {count_key}'
+				)
+		bundles = manifest_dict['BundleList']
+		if len({item['BundleName'] for item in bundles}) != len(bundles):
+			raise ValueError(f'Duplicate manifest bundle names: {remote_manifest_url}')
 		return self._simplify_manifest(manifest_dict)
 
 	@staticmethod
 	def _request_metadata(url: str) -> httpx.Response:
-		def request():
-			response = httpx.get(
-				url,
-				params={'t': int(time.time() * 1000)},
-				timeout=httpx.Timeout(30, connect=15),
-			)
-			response.raise_for_status()
-			return response
+		async def request():
+			try:
+				with anyio.fail_after(METADATA_ATTEMPT_SECONDS):
+					async with httpx.AsyncClient(
+						timeout=httpx.Timeout(30, connect=15)
+					) as client:
+						response = await client.get(
+							url, params={'t': int(time.time() * 1000)}
+						)
+						response.raise_for_status()
+						return response
+			except TimeoutError as error:
+				raise httpx.ReadTimeout('Metadata attempt deadline exceeded') from error
 
-		return retry_call(request, max_attempts=3)
+		# A dedicated portal also works when this synchronous API is called from
+		# an existing event loop. There is only one request-level retry owner.
+		parts = urlsplit(url)
+		safe_url = f'{parts.scheme}://{parts.hostname}{parts.path}'
+		with start_blocking_portal() as portal:
+			for attempt in range(1, 4):
+				logger.info(f'metadata url={safe_url} attempt={attempt}/3')
+				try:
+					return portal.call(request)
+				except httpx.HTTPError as error:
+					status = (
+						error.response.status_code
+						if isinstance(error, httpx.HTTPStatusError)
+						else None
+					)
+					logger.warning(
+						f'metadata url={safe_url} attempt={attempt}/3 '
+						f'error={type(error).__name__} status={status}'
+					)
+					if attempt == 3 or not retryable(error):
+						raise
+					time.sleep(attempt)
+		raise AssertionError('unreachable')
 
 	def load_local_manifest(self) -> Manifest:
 		if not self.is_local_version_exists:

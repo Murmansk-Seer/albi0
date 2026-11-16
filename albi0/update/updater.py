@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import anyio
@@ -9,7 +9,7 @@ from albi0.container import ProcessorContainer
 from albi0.typing import DownloadPostProcessMethod
 
 from .downloader import Downloader, DownloadParams
-from .version import AbstractVersionManager
+from .version import AbstractVersionManager, RemoteManifestSnapshot
 
 updaters: ProcessorContainer['Updater'] = ProcessorContainer()
 
@@ -45,6 +45,7 @@ class Updater:
 		timeout: float | None = None,  # noqa: ASYNC109 - forwarded to downloader deadline
 		min_size: int | None = None,
 		max_size: int | None = None,
+		on_remote_manifest: Callable[[str, RemoteManifestSnapshot], None] | None = None,
 	) -> None:
 		"""异步更新资源文件
 
@@ -64,6 +65,15 @@ class Updater:
 			*patterns,
 			min_size=min_size,
 			max_size=max_size,
+			**(
+				{
+					'on_remote_manifest': lambda snapshot: on_remote_manifest(
+						self.name, snapshot
+					)
+				}
+				if on_remote_manifest is not None
+				else {}
+			),
 		)
 		if not manifest:
 			self._log_message('没有需要更新的文件，运行结束')

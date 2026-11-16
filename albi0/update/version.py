@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import NamedTuple, NewType
 from typing_extensions import Self
 
@@ -24,6 +26,18 @@ class ManifestItem(NamedTuple):
 	local_basename: str
 	file_hash: bytes
 	file_size: int | None = None
+
+
+@dataclass(frozen=True)
+class RemoteManifestSnapshot:
+	"""Per-fetch full manifest, isolated from filtering and caller mutation."""
+
+	version: str
+	items: Mapping[LocalFileName, ManifestItem]
+
+	@classmethod
+	def from_manifest(cls, manifest: 'Manifest') -> 'RemoteManifestSnapshot':
+		return cls(manifest.version, MappingProxyType(dict(manifest.items)))
 
 
 def encode_manifest_items(items: dict[LocalFileName, ManifestItem]) -> dict:
@@ -177,6 +191,7 @@ class AbstractVersionManager(ABC):
 		*patterns: str,
 		min_size: int | None = None,
 		max_size: int | None = None,
+		on_remote_manifest: Callable[[RemoteManifestSnapshot], None] | None = None,
 	) -> Manifest | None:
 		"""
 		比对本地与远程清单，返回需要更新的资源。
@@ -191,6 +206,8 @@ class AbstractVersionManager(ABC):
 			如果没有需要更新的资源，返回None。
 		"""
 		remote_manifest = self.get_remote_manifest()
+		if on_remote_manifest is not None:
+			on_remote_manifest(RemoteManifestSnapshot.from_manifest(remote_manifest))
 		local_manifest = self.load_local_manifest()
 		remote_version = remote_manifest.version
 		remote_items = (
